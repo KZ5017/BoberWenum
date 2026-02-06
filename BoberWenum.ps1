@@ -3,12 +3,90 @@ BoberWenum.ps1
 Passive Active Directory situational awareness enumerator
 Read-only | Stable | AD-aware | Non-offensive
 #>
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+# ----------------------------
+# Output Transcript (Console + File)
+# ----------------------------
+$BasePath = Split-Path -Parent $MyInvocation.MyCommand.Path
+$LogPath  = Join-Path $BasePath ("BoberWenum_" + (Get-Date -Format "yyyyMMdd_HHmmss") + ".log")
+
+try {
+    Start-Transcript -Path $LogPath -Force | Out-Null
+    Write-Host "[INFO] Output is being logged to:"
+    Write-Host "       $LogPath"
+} catch {
+    Write-Host "[WARN] Failed to start transcript logging."
+}
 
 $ErrorActionPreference = "SilentlyContinue"
+
+$banner = @"
+
+                           #########                                       
+                #####   ###         ###    #####                           
+              ##     ####              ####    ##                          
+              ##  ##                        ##  ##                         
+               ##       ###         ###        ##                          
+                 ##                         ##                             
+                ##      ###         ###      ##                            
+               ##       ###         ###       ##                           
+               #                                #                          
+              #             #######             ##                         
+             #             #       ##            #                         
+              ##     ##    ##     ##   ###      ##                         
+              ##      ##     #####     ##       ##                         
+              ##       ###     ##     ##        #      #######             
+               #          ##### #####          ##    ##       ###          
+                #           # # ###           ##    #    ## ##  ###        
+                #           #######           ##   ##      ##     ##       
+              ###                              ##  ##  ####  ## ## ##      
+             ##                                  ###   ####   ##    #      
+            ##                 #                  #   ##  ####  ##  ##     
+           ##        ##   ###      ###   ##        ##  ##  ###    # ##     
+           #          ####            ###           #   ###   ####  ##     
+          ##  ##       ##              ##       ##  ## ## ##  ####  ##     
+          #    ##       #             ##       ##   ##     ####    ##      
+         ##      ##   ###             ####  ###      #  ## ####   ###      
+         ##         ####                ####         #   ###      #        
+         ##          #                   ##          #  ## ##   ##         
+         ##          #                   ##          #         ##          
+          ##         #                   ##         ##      ###            
+          ##   #######                   ########   #     ###              
+            ###      ##                 ###      #########                 
+           ##   ## #  ###################  #  #   ##                       
+            ############                ###########                   
+    ____        _             __        __                         
+    | __ )  ___ | |__   ___ _ _\ \      / /__ _ __  _   _ _ __ ___  
+    |  _ \ / _ \| '_ \ / _ \ '__\ \ /\ / / _ \ '_ \| | | | '_ ` _ \ 
+    | |_) | (_) | |_) |  __/ |   \ V  V /  __/ | | | |_| | | | | | |
+    |____/ \___/|_.__/ \___|_|    \_/\_/ \___|_| |_|\__,_|_| |_| |_|
+"@
+
+Write-Host $banner
+
+Write-Host ""
+Write-Host "==============================================="
+Write-Host " BoberWenum execution started"
+Write-Host " Time   : $(Get-Date)"
+Write-Host " User   : $(whoami)"
+Write-Host " Host   : $env:COMPUTERNAME"
+Write-Host "==============================================="
+Write-Host ""
+
 
 # ----------------------------
 # Helper: Safe execution block
 # ----------------------------
+
+function Write-Phase {
+    param([string]$Name)
+
+    Write-Host ""
+    Write-Host "##################################################"
+    Write-Host "# $Name"
+    Write-Host "##################################################"
+}
+
 function Invoke-Safe {
     param (
         [string]$Title,
@@ -24,10 +102,13 @@ function Invoke-Safe {
     }
 }
 
+Write-Phase "IDENTITY & EXECUTION CONTEXT"
+
 # ----------------------------
 # Identity Context
 # ----------------------------
 Invoke-Safe "Identity Context (Who am I?)" {
+    Write-Host ""
     Write-Host "User          : $(whoami)"
     Write-Host "User SID      : $([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
 
@@ -37,30 +118,139 @@ Invoke-Safe "Identity Context (Who am I?)" {
     Write-Host "Is Admin      : $($principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator))"
     Write-Host "Auth Type     : $($id.AuthenticationType)"
     Write-Host "Token Type    : $($id.ImpersonationLevel)"
-
-    Write-Host "`nGroup Memberships:"
-    whoami /groups
+    Write-Host ""
+    Write-Host "----------------------------------------"
+    Write-Host "Group Memberships:"
+    Write-Host "----------------------------------------"
+    $(whoami /groups)
 }
 
 # ----------------------------
-# Host Context
+# Local Privileges (Extended)
+# ----------------------------
+Invoke-Safe "Local Privileges" {
+    Write-Host ""    
+
+    Write-Host '[*] Raw privilege list (whoami /priv)'
+    $(whoami /priv)
+
+    Write-Host ''
+    Write-Host '[*] Privilege risk analysis'
+
+    # Dangerous privilege mapping
+    $dangerousPrivileges = @{
+        'SeDebugPrivilege'              = 'Read/write any process memory (SYSTEM escalation).'
+        'SeImpersonatePrivilege'        = 'Token impersonation (Juicy/PrintSpoofer style vectors).'
+        'SeAssignPrimaryTokenPrivilege' = 'Spawn processes with arbitrary tokens.'
+        'SeBackupPrivilege'             = 'Read any file ignoring ACLs (NTDS, SAM, secrets).'
+        'SeRestorePrivilege'            = 'Write any file ignoring ACLs (overwrite system files).'
+        'SeTakeOwnershipPrivilege'      = 'Take ownership of objects (privilege takeover).'
+        'SeLoadDriverPrivilege'         = 'Load kernel drivers (ring-0 execution).'
+        'SeCreateTokenPrivilege'        = 'Create arbitrary tokens (full impersonation).'
+        'SeTcbPrivilege'                = 'Act as part of the OS (highest possible trust).'
+    }
+
+    # Execute whoami /priv safely and capture output
+    try {
+        $privOutput = whoami /priv 2>$null
+    } catch {
+        Write-Host '  [INFO] Unable to enumerate privileges.'
+        return
+    }
+
+    if (-not $privOutput) {
+        Write-Host '  [INFO] No privilege information returned.'
+        return
+    }
+
+    $found = $false
+
+    foreach ($line in $privOutput) {
+        foreach ($priv in $dangerousPrivileges.Keys) {
+            if ($line -match $priv -and $line -match 'Enabled') {
+                if (-not $found) {
+                    Write-Host '  [!] Potentially dangerous privileges enabled:'
+                    $found = $true
+                }
+
+                Write-Host "    [HIGH] $priv"
+                Write-Host "           -> $($dangerousPrivileges[$priv])"
+            }
+        }
+    }
+
+    if (-not $found) {
+        Write-Host '  [OK] No dangerous privileges enabled for this user.'
+    }
+}
+
+Write-Phase "HOST & OPERATING SYSTEM CONTEXT"
+
+# ----------------------------
+# Host Context (Low-Priv Safe)
 # ----------------------------
 Invoke-Safe "Host Context (Where am I?)" {
-    $cs = Get-WmiObject Win32_ComputerSystem
-    $os = Get-WmiObject Win32_OperatingSystem
 
+    Write-Host ""
+
+    # ----------------------------
+    # Basic host identity
+    # ----------------------------
     Write-Host "Hostname      : $env:COMPUTERNAME"
-    Write-Host "Domain Joined : $($cs.PartOfDomain)"
-    Write-Host "Domain        : $($cs.Domain)"
-    Write-Host "OS            : $($os.Caption)"
-    Write-Host "OS Version    : $($os.Version)"
-    Write-Host "Architecture  : $($os.OSArchitecture)"
 
-    Write-Host "`nLogged-on users (best effort):"
-    query user 2>$null
+    # ----------------------------
+    # Domain context (registry + env)
+    # ----------------------------
+    $domainJoined = "Unknown"
+    $domainName   = "Unknown"
+
+    try {
+        $csReg = Get-ItemProperty `
+            'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+
+        if ($csReg.Domain -or $csReg.NV_Domain) {
+            $domainJoined = $true
+            $domainName   = if ($csReg.Domain) { $csReg.Domain } else { $csReg.NV_Domain }
+        } else {
+            $domainJoined = $false
+        }
+    } catch {}
+
+    Write-Host "Domain Joined : $domainJoined"
+    Write-Host "Domain        : $domainName"
+
+    # ----------------------------
+    # OS information (registry)
+    # ----------------------------
+    try {
+        $osReg = Get-ItemProperty `
+            'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+
+        Write-Host "OS            : $($osReg.ProductName)"
+        Write-Host "OS Version    : $($osReg.CurrentBuild)"
+    } catch {
+        Write-Host "OS            : Unknown"
+        Write-Host "OS Version    : Unknown"
+    }
+
+    # ----------------------------
+    # Architecture (env safe)
+    # ----------------------------
+    Write-Host "Architecture  : $env:PROCESSOR_ARCHITECTURE"
+
+    Write-Host ""
+    Write-Host "----------------------------------------"
+    Write-Host "Logged-on users (best effort):"
+    Write-Host "----------------------------------------"
+
+    $(query user 2>$null)
 }
 
+# ----------------------------
+# Operating System & Build Context (Tiered, Passive)
+# ----------------------------
 Invoke-Safe "Operating System & Build Context (Tiered, Passive)" {
+    Write-Host ""    
 
     $success = $false
 
@@ -123,115 +313,56 @@ Invoke-Safe "Operating System & Build Context (Tiered, Passive)" {
     }
 }
 
-
 # ----------------------------
-# Local Privileges (Extended)
+# Local Storage Context
 # ----------------------------
-Invoke-Safe "Local Privileges" {
+Invoke-Safe "Local Storage Context (Drives & Volumes)" {
+    Write-Host ""
 
-    Write-Host '[*] Raw privilege list (whoami /priv)'
-    whoami /priv
+    Write-Host "[*] Enumerating local and mounted drives"
 
-    Write-Host ''
-    Write-Host '[*] Privilege risk analysis'
+    $drives = [System.IO.DriveInfo]::GetDrives()
 
-    # Dangerous privilege mapping
-    $dangerousPrivileges = @{
-        'SeDebugPrivilege'              = 'Read/write any process memory (SYSTEM escalation).'
-        'SeImpersonatePrivilege'        = 'Token impersonation (Juicy/PrintSpoofer style vectors).'
-        'SeAssignPrimaryTokenPrivilege' = 'Spawn processes with arbitrary tokens.'
-        'SeBackupPrivilege'             = 'Read any file ignoring ACLs (NTDS, SAM, secrets).'
-        'SeRestorePrivilege'            = 'Write any file ignoring ACLs (overwrite system files).'
-        'SeTakeOwnershipPrivilege'      = 'Take ownership of objects (privilege takeover).'
-        'SeLoadDriverPrivilege'         = 'Load kernel drivers (ring-0 execution).'
-        'SeCreateTokenPrivilege'        = 'Create arbitrary tokens (full impersonation).'
-        'SeTcbPrivilege'                = 'Act as part of the OS (highest possible trust).'
-    }
+    foreach ($d in $drives) {
+        try {
+            $sizeGB = if ($d.TotalSize -gt 0) {
+                [math]::Round($d.TotalSize / 1GB, 2)
+            } else { "N/A" }
 
-    # Execute whoami /priv safely and capture output
-    try {
-        $privOutput = whoami /priv 2>$null
-    } catch {
-        Write-Host '  [INFO] Unable to enumerate privileges.'
-        return
-    }
+            $freeGB = if ($d.TotalFreeSpace -gt 0) {
+                [math]::Round($d.TotalFreeSpace / 1GB, 2)
+            } else { "N/A" }
 
-    if (-not $privOutput) {
-        Write-Host '  [INFO] No privilege information returned.'
-        return
-    }
+            Write-Host "----------------------------------------"
+            Write-Host ("Drive Letter : {0}" -f $d.Name)
+            Write-Host ("Volume Label : {0}" -f $d.VolumeLabel)
+            Write-Host ("File System  : {0}" -f $d.DriveFormat)
+            Write-Host ("Drive Type   : {0}" -f $d.DriveType)
+            Write-Host ("Size (GB)    : {0}" -f $sizeGB)
+            Write-Host ("Free (GB)    : {0}" -f $freeGB)
 
-    $found = $false
-
-    foreach ($line in $privOutput) {
-        foreach ($priv in $dangerousPrivileges.Keys) {
-            if ($line -match $priv -and $line -match 'Enabled') {
-                if (-not $found) {
-                    Write-Host '  [!] Potentially dangerous privileges enabled:'
-                    $found = $true
-                }
-
-                Write-Host "    [HIGH] $priv"
-                Write-Host "           -> $($dangerousPrivileges[$priv])"
+            if ($d.DriveType -eq "Network") {
+                Write-Host " [!] Network-mounted drive"
             }
+            elseif ($d.DriveType -eq "Removable") {
+                Write-Host " [!] Removable media present"
+            }
+
+        } catch {
+            Write-Host ("[INFO] Cannot read drive {0}: {1}" -f $d.Name, $_.Exception.Message)
         }
     }
 
-    if (-not $found) {
-        Write-Host '  [OK] No dangerous privileges enabled for this user.'
-    }
+    Write-Host "`n[INFO] Drive enumeration is read-only and passive."
 }
 
-# ----------------------------
-# Domain Context
-# ----------------------------
-Invoke-Safe "Domain Context" {
-    try {
-        $domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
-        $forest = $domain.Forest
-
-        Write-Host "Domain Name        : $($domain.Name)"
-        Write-Host "Domain SID         : $(([System.Security.Principal.NTAccount]$domain.Name).Translate([System.Security.Principal.SecurityIdentifier]).Value)"
-        Write-Host "Forest             : $($forest.Name)"
-        Write-Host "Domain Mode        : $($domain.DomainMode)"
-        Write-Host "Forest Mode        : $($forest.ForestMode)"
-
-        Write-Host "`nDomain Controllers:"
-        $domain.DomainControllers | ForEach-Object {
-            Write-Host " - $($_.Name)"
-        }
-    } catch {
-        Write-Host "[-] Not in a domain or domain not reachable."
-    }
-}
-
-# ----------------------------
-# Domain Group Memberships
-# ----------------------------
-Invoke-Safe "Domain Group Memberships (High-value only)" {
-    $groups = whoami /groups
-
-    $interesting = @(
-        "Domain Admins",
-        "Enterprise Admins",
-        "Account Operators",
-        "Backup Operators",
-        "Server Operators",
-        "DnsAdmins",
-        "Administrators"
-    )
-
-    foreach ($group in $interesting) {
-        if ($groups -match $group) {
-            Write-Host "[+] Member of: $group"
-        }
-    }
-}
+Write-Phase "DOMAIN & DIRECTORY REALITY CHECK"
 
 # ----------------------------
 # LDAP Reachability
 # ----------------------------
 Invoke-Safe "LDAP / AD Reachability" {
+    Write-Host ""
     try {
         $root = [ADSI]"LDAP://RootDSE"
         Write-Host "LDAP Bind            : OK"
@@ -243,9 +374,108 @@ Invoke-Safe "LDAP / AD Reachability" {
 }
 
 # ----------------------------
+# Domain Context (Robust)
+# ----------------------------
+Invoke-Safe "Domain Context" {
+
+    Write-Host ""
+
+    try {
+        $domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
+    } catch {
+        Write-Host "[-] Not in a domain or domain not reachable."
+        return
+    }
+
+    # --- Basic domain info ---
+    Write-Host "Domain Name        : $($domain.Name)"
+
+    # --- Domain SID (safe LDAP method) ---
+    try {
+        $de = $domain.GetDirectoryEntry()
+        $sidBytes = $de.Properties["objectSid"][0]
+        $domainSid = (New-Object System.Security.Principal.SecurityIdentifier($sidBytes,0)).Value
+        Write-Host "Domain SID         : $domainSid"
+    } catch {
+        Write-Host "Domain SID         : [Unavailable]"
+    }
+
+    # --- Forest info ---
+    try {
+        $forest = $domain.Forest
+        Write-Host "Forest             : $($forest.Name)"
+        Write-Host "Forest Mode        : $($forest.ForestMode)"
+    } catch {
+        Write-Host "Forest             : [Unavailable]"
+    }
+
+    # --- Domain mode ---
+    try {
+        Write-Host "Domain Mode        : $($domain.DomainMode)"
+    } catch {
+        Write-Host "Domain Mode        : [Unavailable]"
+    }
+
+    # --- Domain Controllers ---
+    Write-Host "`nDomain Controllers:"
+    try {
+        $domain.DomainControllers | ForEach-Object {
+            Write-Host " - $($_.Name)"
+        }
+    } catch {
+        Write-Host " [Unavailable]"
+    }
+}
+
+# ----------------------------
+# Domain Group Memberships
+# ----------------------------
+Invoke-Safe "Domain Group Memberships (High-value only)" {
+
+    Write-Host ""
+    $groups = whoami /groups
+
+    $interesting = @(
+        # --- Tier 0 / Critical ---
+        "Domain Admins",
+        "Enterprise Admins",
+
+        # --- Privileged operators ---
+        "Account Operators",
+        "Backup Operators",
+        "Server Operators",
+        "Print Operators",
+        "DnsAdmins",
+
+        # --- Local / cross-host impact ---
+        "Administrators",
+        "Remote Desktop Users",
+
+        # --- Infra / service abuse potential ---
+        "Hyper-V Administrators",
+        "Event Log Readers",
+        "Certificate Service DCOM Access"
+    )
+
+    $found = $false
+
+    foreach ($group in $interesting) {
+        if ($groups -match [regex]::Escape($group)) {
+            Write-Host "[+] Member of: $group"
+            $found = $true
+        }
+    }
+
+    if (-not $found) {
+        Write-Host "[OK] No high-value domain or local group memberships detected."
+    }
+}
+
+# ----------------------------
 # Current User AD Attributes
 # ----------------------------
 Invoke-Safe "Current User AD Attributes (Passive)" {
+    Write-Host ""
     try {
         $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
         $sam = $user.Split('\')[-1]
@@ -276,14 +506,31 @@ Invoke-Safe "Current User AD Attributes (Passive)" {
     }
 }
 
+Write-Phase "LOCAL & NETWORK AWARENESS"
+
 # ----------------------------
 # Network Awareness (Passive)
 # ----------------------------
 Invoke-Safe "Network Awareness (Passive)" {
+    Write-Host ""
+    Write-Host "----------------------------------------"
     Write-Host "IP Configuration:"
-    ipconfig /all | findstr /I "IPv4 DNS DHCP"
-
-    Write-Host "Listening TCP ports with owning process:`n"
+    Write-Host "----------------------------------------"
+    $(ipconfig /all)
+    Write-Host ""
+    Write-Host "----------------------------------------"
+    Write-Host "Content of Hosts file:"
+    Write-Host "----------------------------------------"
+    try {
+        Get-Content C:\Windows\System32\drivers\etc\hosts -ErrorAction SilentlyContinue
+    }
+    catch {
+        Write-Host "C:\Windows\System32\drivers\etc\hosts does not exist or not Accessible"
+    }
+    Write-Host ""
+    Write-Host "----------------------------------------"
+    Write-Host "Listening TCP ports with owning process:"
+    Write-Host "----------------------------------------"
 
     try {
         $conns = Get-NetTCPConnection -State Listen -ErrorAction Stop
@@ -299,226 +546,387 @@ Invoke-Safe "Network Awareness (Passive)" {
         }
     } catch {
         Write-Host "Fallback to netstat..."
-        netstat -ano | findstr LISTEN
+        $(netstat -ano | findstr LISTEN)
     }
 }
 
+# ----------------------------
+# Running Processes (High Signal)
+# ----------------------------
+# ----------------------------
+# Running Processes (High Signal)
+# ----------------------------
 Invoke-Safe "Running Processes (High Signal)" {
 
-    $procs = Get-WmiObject Win32_Process
+    Write-Host ""
 
-    foreach ($p in $procs) {
+    $success = $true
 
-        $owner = "N/A"
-        try {
-            $o = $p.GetOwner()
-            if ($o.ReturnValue -eq 0) {
-                $owner = "$($o.Domain)\$($o.User)"
-            }
-        } catch {}
-
-        $interesting = $false
-        if ($owner -match "SYSTEM|Administrator") { $interesting = $true }
-        if ($p.ExecutablePath -and $p.ExecutablePath -notmatch "Windows") { $interesting = $true }
-
-        if ($interesting) {
-            Write-Host "PID:$($p.ProcessId)  $($p.Name)"
-            Write-Host " Owner : $owner"
-            Write-Host " Path  : $($p.ExecutablePath)"
-            Write-Host ""
-        }
-    }
-}
-
-Invoke-Safe "Services (Details + Control Rights)" {
-
-    $services = Get-WmiObject Win32_Service
-
-    foreach ($s in $services) {
-
-        $canControl = $false
-
-        try {
-            $sd = sc.exe sdshow $s.Name 2>$null
-            if ($sd -match "RPWP|WP") {
-                $canControl = $true
-            }
-        } catch {}
-
-        if ($canControl -or $s.StartName -notmatch "LocalSystem") {
-
-            Write-Host "Service      : $($s.Name)"
-            Write-Host " Display     : $($s.DisplayName)"
-            Write-Host " State       : $($s.State)"
-            Write-Host " Run As      : $($s.StartName)"
-            Write-Host " Binary Path : $($s.PathName)"
-
-            if ($canControl) {
-                Write-Host " [!] You MAY have service control rights"
-            }
-
-            Write-Host ""
-        }
-    }
-}
-
-# -------------------------------------------------------
-# Deleted Active Directory Objects (Tombstones - Passive)
-# -------------------------------------------------------
-Invoke-Safe "Deleted Active Directory Objects (Tombstones - Passive)" {
-
-    $success = $false
-
-    # -------- Tier 1: Get-ADObject (if available) --------
+    # ========================================
+    # Tier 1: WMI (preferred)
+    # ========================================
     try {
-        if (Get-Command Get-ADObject -ErrorAction Stop) {
+        $procs = Get-WmiObject Win32_Process -ErrorAction Stop
 
-            $deleted = Get-ADObject `
-                -Filter 'isDeleted -eq $true' `
-                -IncludeDeletedObjects `
-                -Properties `
-                    samAccountName,
-                    objectClass,
-                    whenCreated,
-                    whenChanged,
-                    lastKnownParent,
-                    msDS-LastKnownRDN,
-                    objectGUID
+        foreach ($p in $procs) {
 
-            foreach ($obj in $deleted) {
-                if ($obj.objectClass -in @("user","group","computer","organizationalUnit")) {
-
-                    Write-Host "Object Class : $($obj.objectClass)"
-                    Write-Host "Name         : $($obj.samAccountName)"
-                    Write-Host "Last RDN     : $($obj.'msDS-LastKnownRDN')"
-                    Write-Host "Last Parent  : $($obj.lastKnownParent)"
-                    Write-Host "GUID         : $($obj.objectGUID)"
-                    Write-Host "Created      : $($obj.whenCreated)"
-                    Write-Host "Changed      : $($obj.whenChanged)"
-                    Write-Host ""
+            $owner = "N/A"
+            try {
+                $o = $p.GetOwner()
+                if ($o.ReturnValue -eq 0) {
+                    $owner = "$($o.Domain)\$($o.User)"
                 }
-            }
+            } catch {}
 
-            $success = $true
-        }
-    } catch {}
+            $interesting = $false
+            if ($owner -match "SYSTEM|Administrator") { $interesting = $true }
+            if ($p.ExecutablePath -and $p.ExecutablePath -notmatch "Windows") { $interesting = $true }
 
-    if ($success) { return }
-
-    # -------- Tier 2: Native LDAP Tombstone Search --------
-    try {
-        $root = [ADSI]"LDAP://RootDSE"
-        $baseDN = $root.defaultNamingContext
-
-        $searcher = New-Object System.DirectoryServices.DirectorySearcher
-        $searcher.SearchRoot = "LDAP://$baseDN"
-        $searcher.Filter = "(isDeleted=TRUE)"
-        $searcher.Tombstone = $true
-        $searcher.PageSize = 200
-
-        $props = @(
-            "samAccountName",
-            "objectClass",
-            "whenCreated",
-            "whenChanged",
-            "lastKnownParent",
-            "msDS-LastKnownRDN",
-            "objectGUID"
-        )
-
-        foreach ($p in $props) { $searcher.PropertiesToLoad.Add($p) }
-
-        $results = $searcher.FindAll()
-
-        foreach ($r in $results) {
-            $cls = $r.Properties["objectclass"] | Select-Object -Last 1
-
-            if ($cls -in @("user","group","computer","organizationalUnit")) {
-
-                Write-Host "Object Class : $cls"
-                Write-Host "Name         : $($r.Properties["samaccountname"])"
-                Write-Host "Last RDN     : $($r.Properties["msds-lastknownrdn"])"
-                Write-Host "Last Parent  : $($r.Properties["lastknownparent"])"
-                Write-Host "GUID         : $([guid]$r.Properties["objectguid"][0])"
-                Write-Host "Created      : $($r.Properties["whencreated"])"
-                Write-Host "Changed      : $($r.Properties["whenchanged"])"
+            if ($interesting) {
+                Write-Host "PID:$($p.ProcessId)  $($p.Name)"
+                Write-Host " Owner : $owner"
+                Write-Host " Path  : $($p.ExecutablePath)"
                 Write-Host ""
             }
         }
 
     } catch {
-        Write-Host "[-] Unable to query deleted AD objects."
+        $success = $false
+    }
+
+    # ========================================
+    # Tier 2: Native fallback (tasklist)
+    # ========================================
+    if (-not $success) {
+
+        Write-Host "[INFO] WMI process enumeration not permitted."
+        Write-Host "[INFO] Falling back to native tasklist output."
+        Write-Host ""
+
+        try {
+            $tasks = tasklist /v 2>$null
+        } catch {
+            $tasks = $null
+        }
+
+        if (-not $tasks) {
+            Write-Host "[INFO] Unable to retrieve process list."
+            Write-Host "[INFO] Process inspection requires higher privileges."
+            return
+        }
+
+        Write-Host "Process snapshot (limited context):"
+        Write-Host "----------------------------------------"
+
+        foreach ($line in $tasks) {
+
+            # Skip headers
+            if ($line -match "^Image Name|^===") { continue }
+
+            # Heuristic signal:
+            # - SYSTEM
+            # - Administrator
+            # - non-standard session
+            if ($line -match "SYSTEM|Administrator") {
+                Write-Host "  $line"
+            }
+        }
+
+        Write-Host ""
+        Write-Host "[INFO] Owner and executable path resolution is limited."
+        Write-Host "[INFO] Re-run after privilege escalation for full visibility."
     }
 }
 
-# ----------------------------------------
-# DPAPI Artefacts (Passive, Presence Only)
-# ----------------------------------------
-Invoke-Safe "DPAPI Artefacts (Passive, Presence Only)" {
+# ----------------------------
+# Services (Details + Control Rights)
+# ----------------------------
+Invoke-Safe "Services (Details + Control Rights)" {
 
-    $usersRoot = "C:\Users"
+    Write-Host ""
 
-    $users = Get-ChildItem $usersRoot -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -notin @("Public","Default","All Users","Default User") }
+    # ----------------------------------------
+    # StartType translation map
+    # ----------------------------------------
+    $ServiceStartTypeMap = @{
+        0 = "Boot - very early driver"
+        1 = "System - kernel init"
+        2 = "Automatic - on boot"
+        3 = "Manual - on demand"
+        4 = "Disabled"
+    }
 
-    foreach ($u in $users) {
+    $success = $true
 
-        Write-Host "`n--- User: $($u.Name) ---"
+    # ========================================
+    # Tier 1: WMI (preferred, high signal)
+    # ========================================
+    try {
+        $services = Get-WmiObject Win32_Service -ErrorAction Stop
 
-        $base = $u.FullName
+        foreach ($s in $services) {
 
-        # --- Master Keys ---
-        $mkPath = Join-Path $base "AppData\Roaming\Microsoft\Protect"
-        if (Test-Path $mkPath) {
-            Write-Host "[+] DPAPI MasterKeys present"
-            Write-Host "    Path: $mkPath"            
-            Get-ChildItem $mkPath -Directory -ErrorAction SilentlyContinue |
-                ForEach-Object {
-                    Write-Host "    SID: $($_.Name)"
+            $canControl = $false
+
+            try {
+                $sd = sc.exe sdshow $s.Name 2>$null
+                if ($sd -match "RPWP|WP") {
+                    $canControl = $true
                 }
-        } else {
-            Write-Host "[-] No DPAPI MasterKeys found"
+            } catch {}
+
+            if ($canControl -or $s.StartName -notmatch "LocalSystem") {
+
+                Write-Host "Service      : $($s.Name)"
+                Write-Host " Display     : $($s.DisplayName)"
+                Write-Host " State       : $($s.State)"
+                Write-Host " Run As      : $($s.StartName)"
+                Write-Host " Binary Path : $($s.PathName)"
+
+                if ($canControl) {
+                    Write-Host " [!] You MAY have service control rights"
+                }
+
+                Write-Host ""
+            }
         }
 
-        # --- Credential Files ---
-        $credPath = Join-Path $base "AppData\Roaming\Microsoft\Credentials"
-        if (Test-Path $credPath) {
-            Write-Host "[+] Windows Credentials present"
-            Write-Host "    Path: $credPath"
-            Get-ChildItem $credPath -File -ErrorAction SilentlyContinue |
-                ForEach-Object {
-                    Write-Host "    $($_.Name)"
-                }
+    } catch {
+        $success = $false
+    }
+
+    # ========================================
+    # Tier 2: Registry fallback (low-priv safe)
+    # ========================================
+    if (-not $success) {
+
+        Write-Host "[INFO] WMI service enumeration not permitted."
+        Write-Host "[INFO] Falling back to registry-based service discovery."
+        Write-Host ""
+
+        $servicesRoot = "HKLM:\SYSTEM\CurrentControlSet\Services"
+
+        try {
+            $serviceKeys = Get-ChildItem $servicesRoot -ErrorAction Stop
+        } catch {
+            Write-Host "[INFO] Unable to enumerate services via registry."
+            return
         }
 
-        # --- Vaults ---
-        $vaultPath = Join-Path $base "AppData\Local\Microsoft\Vault"
-        if (Test-Path $vaultPath) {
-            Write-Host "[+] Vault data present"
-            Write-Host "    Path: $vaultPath"            
-            Get-ChildItem $vaultPath -Directory -ErrorAction SilentlyContinue |
-                ForEach-Object {
-                    Write-Host "    Vault: $($_.Name)"
+        foreach ($svc in $serviceKeys) {
+
+            try {
+                $props = Get-ItemProperty $svc.PSPath
+
+                $name      = $svc.PSChildName
+                $imagePath = $props.ImagePath
+                $startName = $props.ObjectName
+                $startRaw  = $props.Start
+
+                if ($ServiceStartTypeMap.ContainsKey($startRaw)) {
+                    $startType = "$startRaw ($($ServiceStartTypeMap[$startRaw]))"
+                } else {
+                    $startType = "$startRaw (Unknown)"
                 }
+
+                # Filter: show only interesting entries
+                if ($startName -and $startName -notmatch "LocalSystem") {
+
+                    Write-Host "Service      : $name"
+                    Write-Host " Run As      : $startName"
+                    Write-Host " Image Path  : $imagePath"
+                    Write-Host " Start Type  : $startType"
+
+                    # ---- Extra signal ----
+                    if ($startRaw -eq 2 -and $startName -notmatch "LocalSystem") {
+                        Write-Host " [!] Auto-start service running as non-SYSTEM"
+                    }
+
+                    Write-Host " [INFO] Registry-derived data (control rights unknown)"
+                    Write-Host ""
+                }
+
+            } catch {
+                continue
+            }
         }
 
-        # --- Chrome Login Data ---
-        $chromeLogin = Join-Path $base "AppData\Local\Google\Chrome\User Data\Default\Login Data"
-        if (Test-Path $chromeLogin) {
-            Write-Host "[+] Chrome Login Data present"
-            Write-Host "    Path: $chromeLogin"
+        Write-Host "[INFO] Full service enumeration requires higher privileges."
+        Write-Host "[INFO] Consider manual service ACL review if privilege level increases."
+    }
+}
+
+# ----------------------------
+# Network Shares Enumeration
+# ----------------------------
+Invoke-Safe "Network Shares Enumeration (ACL + Effective Access)" {
+    Write-Host ""
+
+    # Global share roots storage (used by later modules)
+    if (-not $global:BoberDiscoveredShareRoots) {
+        $global:BoberDiscoveredShareRoots = @()
+    }
+
+    Write-Host "[*] Enumerating domain computers and accessible shares (passive)"
+
+    # --------------------------------------------------
+    # Current identity context
+    # --------------------------------------------------
+    $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $currentUser     = $currentIdentity.Name
+
+    try {
+        $userGroups = $currentIdentity.Groups.Translate(
+            [System.Security.Principal.NTAccount]
+        ) | ForEach-Object { $_.Value }
+    } catch {
+        $userGroups = @()
+    }
+
+    # --------------------------------------------------
+    # ACE normalizer (deduplication & readability)
+    # --------------------------------------------------
+    function Convert-Ace {
+        param($Ace)
+
+        $identity = $Ace.IdentityReference.ToString()
+        $rights   = $Ace.FileSystemRights.ToString()
+        $type     = $Ace.AccessControlType.ToString()
+
+        if ([string]::IsNullOrWhiteSpace($identity)) { return $null }
+        if ([string]::IsNullOrWhiteSpace($rights))   { return $null }
+        if ($rights -match '^-?\d+$')                 { return $null }
+
+        return @{
+            Identity = $identity
+            Rights   = $rights
+            Type     = $type
+            Key      = "$identity|$rights|$type"
         }
     }
 
-    Write-Host "`n[INFO] Presence of DPAPI artefacts does NOT imply access."
-    Write-Host "[INFO] This section performs NO decryption and NO modification."
+    # --------------------------------------------------
+    # Discover computers via LDAP (best effort)
+    # --------------------------------------------------
+    try {
+        $domain = ([System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()).Name
+
+        $searcher = New-Object System.DirectoryServices.DirectorySearcher
+        $searcher.SearchRoot = "LDAP://$domain"
+        $searcher.Filter = "(objectCategory=computer)"
+        $searcher.PropertiesToLoad.Add("name") | Out-Null
+        $searcher.PageSize = 1000
+
+        $computers = $searcher.FindAll() | ForEach-Object {
+            $_.Properties["name"][0]
+        }
+    } catch {
+        Write-Host "[INFO] Unable to enumerate computers via LDAP."
+        return
+    }
+
+    if (-not $computers -or $computers.Count -eq 0) {
+        Write-Host "[INFO] No computers found."
+        return
+    }
+
+    # --------------------------------------------------
+    # Enumerate shares per computer
+    # --------------------------------------------------
+    foreach ($computer in $computers) {
+
+        $net = net view \\$computer /all 2>$null
+        if (-not $net) { continue }
+
+        $shareLines = $net | Select-String -SimpleMatch "Disk"
+        if (-not $shareLines) { continue }
+
+        foreach ($line in $shareLines) {
+
+            $parts = $line.ToString().Trim() -split "\s+"
+            if ($parts.Count -lt 1) { continue }
+
+            $shareName = $parts[0]
+            $unc = "\\$computer\$shareName"
+
+            try {
+                $acl = Get-Acl $unc -ErrorAction Stop
+            } catch {
+                continue
+            }
+
+            Write-Host "----------------------------------------"            
+            Write-Host "Computer : $computer"
+            Write-Host "Share    : $shareName"
+            Write-Host "UNC Path : $unc"
+            Write-Host ""
+
+            # After successful Get-Acl
+            if ($global:BoberDiscoveredShareRoots -notcontains $unc) {
+                $global:BoberDiscoveredShareRoots += $unc
+            }
+
+            # ------------------------------------------
+            # Deduplicated ACL
+            # ------------------------------------------
+            Write-Host "ACL (deduplicated):"
+
+            $seen = @{}
+
+            foreach ($ace in $acl.Access) {
+                $norm = Convert-Ace $ace
+                if (-not $norm) { continue }
+
+                if ($seen.ContainsKey($norm.Key)) { continue }
+                $seen[$norm.Key] = $true
+
+                Write-Host "  - $($norm.Identity) | $($norm.Rights) | $($norm.Type)"
+            }
+
+            # ------------------------------------------
+            # Effective permissions (current user)
+            # ------------------------------------------
+            Write-Host ""
+            Write-Host "Effective permissions for current user ($currentUser):"
+
+            $seenUser = @{}
+            $found = $false
+
+            foreach ($ace in $acl.Access) {
+
+                $identity = $ace.IdentityReference.ToString()
+                if ($identity -ne $currentUser -and $userGroups -notcontains $identity) {
+                    continue
+                }
+
+                $norm = Convert-Ace $ace
+                if (-not $norm) { continue }
+
+                if ($seenUser.ContainsKey($norm.Key)) { continue }
+                $seenUser[$norm.Key] = $true
+
+                Write-Host "  - $($norm.Identity) | $($norm.Rights) | $($norm.Type)"
+                $found = $true
+            }
+
+            if (-not $found) {
+                Write-Host "  - No explicit matching ACE"
+            }
+
+            Write-Host ""
+        }
+    }
+
+    Write-Host "[INFO] Share enumeration completed (no modification performed)."
 }
+
+Write-Phase "ACTIVE DIRECTORY ATTACK SURFACE (PASSIVE)"
 
 # ----------------------------
 # AD ACL Escalation-Risk Audit
 # ----------------------------
 Invoke-Safe "AD ACL Escalation-Risk Audit" {
-
+    Write-Host ""
     Write-Host '[*] Active Directory ACL escalation-risk audit (no RSAT)'
 
     # --------------------------------------------------
@@ -664,8 +1072,9 @@ Invoke-Safe "AD ACL Escalation-Risk Audit" {
 # Active Directory – Delegation Enumeration
 # ==================================================
 Invoke-Safe "Active Directory Delegation Enumeration" {
+    Write-Host ""
 
-    Write-Host "`n[+] Active Directory Delegation checks"
+    Write-Host "[+] Active Directory Delegation checks"
 
     function Info($msg)       { Write-Host "  [INFO]        $msg" }
     function Ok($msg)         { Write-Host "  [OK]          $msg" }
@@ -782,6 +1191,7 @@ Invoke-Safe "Active Directory Delegation Enumeration" {
 # GPO ACL Privilege Escalation
 # ----------------------------
 Invoke-Safe "GPO ACL Escalation Risks" {
+    Write-Host ""
 
     # --- Domain check ---
     try {
@@ -892,6 +1302,7 @@ Invoke-Safe "GPO ACL Escalation Risks" {
 # GPO SYSVOL File-Level ACLs
 # ----------------------------
 Invoke-Safe "GPO SYSVOL File-Level Escalation Risks" {
+    Write-Host ""
 
     # --- Domain check ---
     try {
@@ -997,6 +1408,7 @@ Invoke-Safe "GPO SYSVOL File-Level Escalation Risks" {
 # ADCS Certificate Services
 # ----------------------------
 Invoke-Safe "ADCS Certificate Template & CA Escalation Risks" {
+    Write-Host ""
 
     # --- LDAP Root ---
     try {
@@ -1173,6 +1585,7 @@ Invoke-Safe "ADCS Certificate Template & CA Escalation Risks" {
 # BadSuccessor / dMSA Attack Surface (Passive Assessment)
 # ----------------------------
 Invoke-Safe "BadSuccessor / dMSA Attack Surface (Passive Assessment)" {
+    Write-Host ""
 
     $isInteresting = $false
 
@@ -1262,10 +1675,557 @@ Invoke-Safe "BadSuccessor / dMSA Attack Surface (Passive Assessment)" {
     Write-Host "[INFO] No exploitation or modification was performed."
 }
 
+Write-Phase "HISTORICAL & SENSITIVE ARTEFACTS"
+
+# -------------------------------------------------------
+# Deleted Active Directory Objects (Tombstones - Passive)
+# -------------------------------------------------------
+Invoke-Safe "Deleted Active Directory Objects (Tombstones - Passive)" {
+    Write-Host ""
+    $success = $false
+
+    # -------- Tier 1: Get-ADObject (if available) --------
+    try {
+        if (Get-Command Get-ADObject -ErrorAction Stop) {
+
+            $deleted = Get-ADObject `
+                -Filter 'isDeleted -eq $true' `
+                -IncludeDeletedObjects `
+                -Properties `
+                    samAccountName,
+                    objectClass,
+                    whenCreated,
+                    whenChanged,
+                    lastKnownParent,
+                    msDS-LastKnownRDN,
+                    objectGUID
+
+            foreach ($obj in $deleted) {
+                if ($obj.objectClass -in @("user","group","computer","organizationalUnit")) {
+
+                    Write-Host "Object Class : $($obj.objectClass)"
+                    Write-Host "Name         : $($obj.samAccountName)"
+                    Write-Host "Last RDN     : $($obj.'msDS-LastKnownRDN')"
+                    Write-Host "Last Parent  : $($obj.lastKnownParent)"
+                    Write-Host "GUID         : $($obj.objectGUID)"
+                    Write-Host "Created      : $($obj.whenCreated)"
+                    Write-Host "Changed      : $($obj.whenChanged)"
+                    Write-Host ""
+                }
+            }
+
+            $success = $true
+        }
+    } catch {}
+
+    if ($success) { return }
+
+    # -------- Tier 2: Native LDAP Tombstone Search --------
+    try {
+        $root = [ADSI]"LDAP://RootDSE"
+        $baseDN = $root.defaultNamingContext
+
+        $searcher = New-Object System.DirectoryServices.DirectorySearcher
+        $searcher.SearchRoot = "LDAP://$baseDN"
+        $searcher.Filter = "(isDeleted=TRUE)"
+        $searcher.Tombstone = $true
+        $searcher.PageSize = 200
+
+        $props = @(
+            "samAccountName",
+            "objectClass",
+            "whenCreated",
+            "whenChanged",
+            "lastKnownParent",
+            "msDS-LastKnownRDN",
+            "objectGUID"
+        )
+
+        foreach ($p in $props) { $searcher.PropertiesToLoad.Add($p) }
+
+        $results = $searcher.FindAll()
+
+        foreach ($r in $results) {
+            $cls = $r.Properties["objectclass"] | Select-Object -Last 1
+
+            if ($cls -in @("user","group","computer","organizationalUnit")) {
+
+                Write-Host "Object Class : $cls"
+                Write-Host "Name         : $($r.Properties["samaccountname"])"
+                Write-Host "Last RDN     : $($r.Properties["msds-lastknownrdn"])"
+                Write-Host "Last Parent  : $($r.Properties["lastknownparent"])"
+                Write-Host "GUID         : $([guid]$r.Properties["objectguid"][0])"
+                Write-Host "Created      : $($r.Properties["whencreated"])"
+                Write-Host "Changed      : $($r.Properties["whenchanged"])"
+                Write-Host ""
+            }
+        }
+
+    } catch {
+        Write-Host "[-] Unable to query deleted AD objects."
+    }
+}
+
+# ----------------------------------------
+# DPAPI Artefacts (Passive, Presence Only)
+# ----------------------------------------
+Invoke-Safe "DPAPI Artefacts (Passive, Presence Only)" {
+    $usersRoot = "C:\Users"
+
+    $users = Get-ChildItem $usersRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notin @("Public","Default","All Users","Default User") }
+
+    foreach ($u in $users) {
+        Write-Host ""
+        Write-Host "----------------------------------------"
+        Write-Host " User: $($u.Name) "
+        Write-Host "----------------------------------------"
+        $base = $u.FullName
+
+        # --- Master Keys ---
+        $mkPath = Join-Path $base "AppData\Roaming\Microsoft\Protect"
+        if (Test-Path $mkPath) {
+            Write-Host "[+] DPAPI MasterKeys present"
+            Write-Host "    Path: $mkPath"            
+            Get-ChildItem $mkPath -Directory -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                    Write-Host "    SID: $($_.Name)"
+                }
+        } else {
+            Write-Host "[-] No DPAPI MasterKeys found"
+        }
+
+        # --- Credential Files ---
+        $credPath = Join-Path $base "AppData\Roaming\Microsoft\Credentials"
+        if (Test-Path $credPath) {
+            Write-Host "[+] Windows Credentials present"
+            Write-Host "    Path: $credPath"
+            Get-ChildItem $credPath -File -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                    Write-Host "    $($_.Name)"
+                }
+        }
+
+        # --- Vaults ---
+        $vaultPath = Join-Path $base "AppData\Local\Microsoft\Vault"
+        if (Test-Path $vaultPath) {
+            Write-Host "[+] Vault data present"
+            Write-Host "    Path: $vaultPath"            
+            Get-ChildItem $vaultPath -Directory -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                    Write-Host "    Vault: $($_.Name)"
+                }
+        }
+
+        # --- Chrome Login Data ---
+        $chromeLogin = Join-Path $base "AppData\Local\Google\Chrome\User Data\Default\Login Data"
+        if (Test-Path $chromeLogin) {
+            Write-Host "[+] Chrome Login Data present"
+            Write-Host "    Path: $chromeLogin"
+        }
+    }
+
+    Write-Host "`n[INFO] Presence of DPAPI artefacts does NOT imply access."
+    Write-Host "[INFO] This section performs NO decryption and NO modification."
+}
+
+Write-Phase "TARGETED ENUMERATION & COLLECTION"
+
+# ----------------------------
+# Targeted File Enumeration (Fast Mode)
+# ----------------------------
+Invoke-Safe "Targeted File Enumeration (Fast Mode, Deduplicated)" {
+    Write-Host ""
+
+    # --------------------------------------------------
+    # Extension whitelist
+    # --------------------------------------------------
+    $TargetExtensions = @(
+        ".txt", ".doc", ".docx", ".xls", ".xlsx", ".pdf",
+        ".odt", ".ods", ".odp",
+        ".ini", ".conf", ".cfg", ".xml", ".json", ".yml", ".yaml",
+        ".kdbx", ".pfx", ".p12", ".pem", ".key", ".ppk",
+        ".bak", ".old", ".backup", ".bkp", "~",
+        ".zip", ".7z", ".rar"
+    )
+
+    # --------------------------------------------------
+    # Base root paths (local)
+    # --------------------------------------------------
+    $RootPaths = @(
+        "C:\Users",
+        "C:\ProgramData",
+        "C:\inetpub",
+        "C:\Windows\Temp"
+    )
+
+    # --------------------------------------------------
+    # Scope banner
+    # --------------------------------------------------
+    Write-Host "[*] Target extensions:"
+    Write-Host "    $($TargetExtensions -join ', ')"
+    Write-Host ""
+    Write-Host "[*] Target root paths:"
+    Write-Host "    $($RootPaths -join ', ')"
+    Write-Host ""
+
+    # --------------------------------------------------
+    # Merge discovered network shares (if any)
+    # --------------------------------------------------
+    if ($global:BoberDiscoveredShareRoots -and
+        $global:BoberDiscoveredShareRoots.Count -gt 0) {
+
+        Write-Host "[*] Adding discovered network shares to scan scope"
+
+        foreach ($share in $global:BoberDiscoveredShareRoots) {
+            if ($RootPaths -notcontains $share) {
+                $RootPaths += $share
+                Write-Host "    + $share"
+            }
+        }
+    } else {
+        Write-Host "[INFO] No previously discovered network shares to include"
+        Write-Host ""
+    }
+    # --------------------------------------------------
+    # Deduplication storage
+    # --------------------------------------------------
+    $SeenFileIds = @{}
+
+    # --------------------------------------------------
+    # Safe child enumeration
+    # --------------------------------------------------
+    function Get-SafeChildItems {
+        param ([string]$Path)
+        try {
+            Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop
+        } catch {
+            #Write-Host "[SKIP][ACL] $Path"
+            return @()
+        }
+    }
+
+    # --------------------------------------------------
+    # File ID (best effort)
+    # --------------------------------------------------
+    function Get-FileId {
+        param ([string]$Path)
+        try {
+            $fs = [System.IO.File]::Open(
+                $Path,
+                [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::Read,
+                [System.IO.FileShare]::ReadWrite
+            )
+            $id = $fs.SafeFileHandle.DangerousGetHandle().ToInt64()
+            $fs.Close()
+            return $id
+        } catch {
+            return $null
+        }
+    }
+
+    # --------------------------------------------------
+    # Recursive traversal
+    # --------------------------------------------------
+    function Search-Path {
+        param ([string]$StartPath)
+
+        foreach ($item in Get-SafeChildItems -Path $StartPath) {
+
+            if ($item.PSIsContainer) {
+                Search-Path -StartPath $item.FullName
+                continue
+            }
+
+            try {
+                $ext = $item.Extension.ToLower()
+                if (-not ($TargetExtensions -contains $ext)) { continue }
+
+                $fid = Get-FileId -Path $item.FullName
+                if ($fid -and $SeenFileIds.ContainsKey($fid)) { continue }
+                if ($fid) { $SeenFileIds[$fid] = $true }
+
+                Write-Host "[HIT][$ext] $($item.FullName)"
+            } catch {}
+        }
+    }
+
+    # --------------------------------------------------
+    # Execution
+    # --------------------------------------------------
+    foreach ($root in $RootPaths) {
+        Write-Host ""
+        Write-Host "----------------------------------------"
+        Write-Host "[*] Scanning: $root"
+        Write-Host "----------------------------------------"
+
+        if (-not (Test-Path -LiteralPath $root)) {
+            Write-Host "[MISS] Path does not exist"
+            continue
+        }
+
+        Search-Path -StartPath $root
+    }
+
+    Write-Host ""
+    Write-Host "[INFO] Targeted file enumeration completed"
+}
+
+# ----------------------------
+# Security Artefact Collection
+# ----------------------------
+Invoke-Safe "Security Artefact Collection (Local, User & Policy Evidence)" {
+    Write-Host ""
+    Write-Host "[INFO] Security artefact collection started."
+    Write-Host "[INFO] This section performs READ operations and file collection only."
+    Write-Host ""
+
+    # --------------------------------------------------
+    # Output base
+    # --------------------------------------------------
+    try {
+        $scriptRoot = Split-Path -Parent $PSCommandPath
+    } catch {
+        $scriptRoot = Get-Location
+    }
+
+    $outRoot = Join-Path $scriptRoot "Security_Artifacts_Results"
+    New-Item -ItemType Directory -Force -Path $outRoot | Out-Null
+
+    # ==================================================
+    # EVENT LOGS
+    # ==================================================
+    Write-Host "[*] Exporting event logs"
+
+    $logOut = Join-Path $outRoot "EventLogs"
+    New-Item -ItemType Directory -Force -Path $logOut | Out-Null
+
+    $logs = @(
+        @{ Name = "Security";  File = "Security.evtx" },
+        @{ Name = "System";    File = "System.evtx" },
+        @{ Name = "Application"; File = "Application.evtx" },
+        @{ Name = "Microsoft-Windows-PowerShell/Operational"; File = "PowerShell_Operational.evtx" }
+    )
+
+    $eventLogTotal   = 0
+    $eventLogSuccess = 0
+
+    foreach ($log in $logs) {
+        $eventLogTotal++
+
+        $target = Join-Path $logOut $log.File
+        cmd /c "wevtutil epl `"$($log.Name)`" `"$target`" 2>nul" | Out-Null
+
+        if (Test-Path $target) {
+            $eventLogSuccess++
+            Write-Host "  [OK] $($log.Name) exported"
+        } else {
+            Write-Host "  [SKIP] $($log.Name) not accessible"
+        }
+    }
+
+    Write-Host ""
+
+    # ==================================================
+    # GPO RESULT
+    # ==================================================
+    Write-Host "[*] Exporting GPO result"
+
+    $gpoOut = Join-Path $outRoot "GPO_Result.html"
+    cmd /c "gpresult /h `"$gpoOut`" 2>nul" | Out-Null
+
+    $gpoStatus = $false
+    if (Test-Path $gpoOut) {
+        Write-Host "  [OK] GPO report created"
+        $gpoStatus = $true
+    } else {
+        Write-Host "  [SKIP] GPO report not available"
+    }
+
+    Write-Host ""
+
+    # ==================================================
+    # USER PROFILE ENUMERATION & COLLECTION
+    # ==================================================
+    Write-Host "[*] Enumerating local user profiles"
+
+    $usersOut = Join-Path $outRoot "Users"
+    New-Item -ItemType Directory -Force -Path $usersOut | Out-Null
+
+    $userDirs = Get-ChildItem "C:\Users" -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notin @("Public","Default","Default User","All Users") }
+
+    $userCount = 0
+
+    foreach ($u in $userDirs) {
+
+        $userCount++
+        $userName = $u.Name
+        $userPath = $u.FullName
+        $userOut  = Join-Path $usersOut $userName
+
+        New-Item -ItemType Directory -Force -Path $userOut | Out-Null
+
+        Write-Host "User : $userName"
+        Write-Host "Path : $userPath"
+
+        # ---------------------------
+        # PSReadLine history
+        # ---------------------------
+        $psHist = Join-Path $userPath "AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine"
+
+        if (Test-Path $psHist) {
+
+            $psFiles = Get-ChildItem -Path $psHist -Filter *.txt -File -ErrorAction SilentlyContinue
+
+            if ($psFiles) {
+                foreach ($f in $psFiles) {
+
+                    if (-not (Test-Path $f.FullName)) {
+                        Write-Host "  [SKIP] PSReadLine file vanished: $($f.FullName)"
+                        continue
+                    }
+
+                    $dest = Join-Path $userOut ("PSReadLine_" + $f.Name)
+
+                    try {
+                        Copy-Item -LiteralPath $f.FullName -Destination $dest -Force -ErrorAction Stop
+                        Write-Host "  [OK] PSReadLine history copied"
+                        Write-Host "       Source: $($f.FullName)"
+                        Write-Host "       Target: $dest"
+                    } catch {
+                        Write-Host "  [FAIL] PSReadLine copy failed"
+                        Write-Host "        Source: $($f.FullName)"
+                    }
+                }
+            } else {
+                Write-Host "  [SKIP] PSReadLine directory exists, no history files"
+            }
+
+        } else {
+            Write-Host "  [SKIP] No PSReadLine history directory"
+        }
+
+        # ---------------------------
+        # Browser history (Chromium)
+        # ---------------------------
+        $browserOut = Join-Path $userOut "Browser_History"
+        New-Item -ItemType Directory -Force -Path $browserOut | Out-Null
+
+        $chromium = @{
+            "Chrome" = "AppData\Local\Google\Chrome\User Data\Default\History"
+            "Edge"   = "AppData\Local\Microsoft\Edge\User Data\Default\History"
+            "Brave"  = "AppData\Local\BraveSoftware\Brave-Browser\User Data\Default\History"
+        }
+
+        foreach ($b in $chromium.Keys) {
+
+            $src = Join-Path $userPath $chromium[$b]
+
+            if (-not (Test-Path $src)) {
+                Write-Host "  [SKIP] No $b history"
+                continue
+            }
+
+            $dest = Join-Path $browserOut ($b + "_History.db")
+
+            try {
+                Copy-Item -LiteralPath $src -Destination $dest -Force -ErrorAction Stop
+                Write-Host "  [OK] $b history copied"
+                Write-Host "       Source: $src"
+                Write-Host "       Target: $dest"
+            } catch {
+                Write-Host "  [FAIL] $b history copy failed"
+                Write-Host "        Source: $src"
+            }
+        }
+
+        # ---------------------------
+        # Firefox history
+        # ---------------------------
+        $ffRoot = Join-Path $userPath "AppData\Roaming\Mozilla\Firefox\Profiles"
+
+        if (Test-Path $ffRoot) {
+
+            $profiles = Get-ChildItem -Path $ffRoot -Directory -ErrorAction SilentlyContinue
+
+            if ($profiles) {
+                foreach ($p in $profiles) {
+
+                    $places = Join-Path $p.FullName "places.sqlite"
+
+                    if (-not (Test-Path $places)) {
+                        Write-Host "  [SKIP] No Firefox history ($($p.Name))"
+                        continue
+                    }
+
+                    $dest = Join-Path $browserOut ("Firefox_" + $p.Name + "_places.db")
+
+                    try {
+                        Copy-Item -LiteralPath $places -Destination $dest -Force -ErrorAction Stop
+                        Write-Host "  [OK] Firefox history copied"
+                        Write-Host "       Profile: $($p.Name)"
+                        Write-Host "       Source : $places"
+                        Write-Host "       Target : $dest"
+                    } catch {
+                        Write-Host "  [FAIL] Firefox history copy failed ($($p.Name))"
+                        Write-Host "        Source: $places"
+                    }
+                }
+            } else {
+                Write-Host "  [SKIP] Firefox profiles directory empty"
+            }
+
+        } else {
+            Write-Host "  [SKIP] No Firefox profiles directory"
+        }
+
+        Write-Host ""
+    }
+
+
+    # ==================================================
+    # ZIP PACKAGING
+    # ==================================================
+    Write-Host "[*] Creating archive"
+
+    $zipPath = Join-Path $scriptRoot "Security_Artifacts_Results.zip"
+    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+
+    if (Get-Command Compress-Archive -ErrorAction SilentlyContinue) {
+        Compress-Archive -Path $outRoot -DestinationPath $zipPath -Force -ErrorAction SilentlyContinue
+    }
+
+    $zipStatus = Test-Path $zipPath
+
+    if ($zipStatus) {
+        Write-Host "  [OK] Archive created: $zipPath"
+    } else {
+        Write-Host "  [FAIL] Archive creation failed"
+    }
+
+    # ==================================================
+    # SUMMARY
+    # ==================================================
+    Write-Host ""
+    Write-Host "[*] Collection summary"
+    Write-Host "  Event logs : $eventLogSuccess / $eventLogTotal"
+    Write-Host "  GPO report : $(if ($gpoStatus) { 'OK' } else { 'SKIPPED' })"
+    Write-Host "  Users processed : $userCount"
+    Write-Host "  Archive : $(if ($zipStatus) { 'OK' } else { 'FAIL' })"
+
+    Write-Host ""
+    Write-Host "[INFO] Security artefact collection completed."
+}
+
+Write-Phase "MENTAL MODEL & NEXT STEPS"
+
 # ----------------------------
 # Summary Hint
 # ----------------------------
 Invoke-Safe "Mental Checklist (What does this tell you?)" {
+    Write-Host ""
     Write-Host @"
 Ask yourself:
 - Am I a domain user or something more?
@@ -1279,3 +2239,10 @@ This script does NOT exploit.
 It tells you what kind of chessboard you are standing on.
 "@
 }
+
+# ----------------------------
+# Stop Transcript
+# ----------------------------
+try {
+    Stop-Transcript | Out-Null
+} catch {}

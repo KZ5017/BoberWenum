@@ -1,38 +1,24 @@
 # BoberWenum
 
-**BoberWenum.ps1** is a passive Active Directory situational awareness enumerator designed for security assessments, internal audits, and controlled penetration testing scenarios.
+**BoberWenum** is a passive, low-privilege–aware Windows enumeration script designed for post-compromise and internal assessment scenarios.  
+Its goal is to provide a structured, reliable overview of the local system, domain context, and Active Directory attack surface **without exploitation or modification**.
 
-It focuses on **read-only enumeration**, stability, and signal over noise.  
-No exploitation. No modification. No assumptions.
-
----
-
-## What is this?
-
-BoberWenum is a **PowerShell-based enumeration script** that helps you understand:
-
-- **Who you are** in a Windows / AD environment  
-- **Where you are** (workstation, server, domain context)
-- **What privileges, rights, and exposures** your current identity may have
-- **Which escalation paths might exist**, purely from a configuration and permission perspective
-
-It is intentionally **non-offensive** and **passive** by design.
+The script is intentionally defensive in execution: every enumeration block is isolated, error-tolerant, and designed to degrade gracefully when privileges are insufficient.
 
 ---
 
-## What is it for?
+## Design Goals
 
-This tool is useful when you want to:
-
-- Quickly build **situational awareness** after initial access
-- Support **manual privilege escalation analysis**
-- Validate **Active Directory hardening assumptions**
-- Assist blue team, purple team, or red team workflows
-- Use as a **mental map**, not an autopilot
-
-Think of it as answering:
-
-> *“What kind of chessboard am I standing on?”*
+- **Low-priv friendly**  
+  Works in restricted environments (e.g. WinRM shells, service accounts, limited domain users).
+- **Passive by default**  
+  No exploitation, no state changes, no privilege escalation attempts.
+- **High signal, low noise**  
+  Focuses on information that actually matters during triage.
+- **Modular and extensible**  
+  Independent execution blocks with clear scope and purpose.
+- **Honest output**  
+  Distinguishes between *“not present”* and *“not accessible”*.
 
 ---
 
@@ -47,163 +33,137 @@ No parameters are required.
 
 ---
 
-## What does it enumerate?
+## High-Level Structure
 
-### Identity & Host Context
+The script is organized into logical phases, each representing a different layer of situational awareness:
 
-- Current user, SID, token type, admin status
-    
-- Group memberships (local and domain)
-    
-- Hostname, OS version, architecture
-    
-- Domain join status and logged-on users
-    
+1. **Identity & Execution Context**
+2. **Host & Operating System Context**
+3. **Domain & Directory Reality Check**
+4. **Local & Network Awareness**
+5. **Active Directory Attack Surface (Passive)**
+6. **Historical & Sensitive Artefacts**
+7. **Targeted Enumeration & Collection**
+8. **Mental Model & Next Steps**
 
-### Local Privileges
+Each section is visually separated and executed via a safe wrapper to prevent partial failures from breaking the run.
 
-- Full `whoami /priv` output
-    
-- Highlighting of **dangerous enabled privileges** (e.g. SeDebug, SeImpersonate, SeBackup, etc.)
-    
+---
 
-### Active Directory Context
+## Key Capabilities
 
-- Domain and forest information
-    
+### Identity & Token Context
+- Current user identity and SID
+- Group memberships
+- Token type and authentication context
+- Local privilege analysis with risk classification
+
+### Host & OS Enumeration (Low-Priv Safe)
+- Hostname, architecture
+- Domain join status (registry + environment based)
+- OS version and build (tiered fallback logic)
+- Logged-on user snapshot
+
+### Domain & Active Directory Awareness
+- LDAP reachability check
+- Domain and forest metadata
 - Domain controllers
-    
-- LDAP reachability
-    
-- Current user AD attributes
-    
-- High-value domain group memberships
-    
+- High-value domain and local group memberships
+- Current user AD attributes (passive lookup)
 
-### Network Awareness (Passive)
+### Network Awareness
+- IP configuration
+- Hosts file inspection
+- Listening TCP ports with owning processes
+- Graceful fallback to native tools when needed
 
-- IP configuration summary
-    
-- Listening TCP ports with owning process and PID
-    
-- Safe fallback when modern cmdlets are unavailable
-    
+### Process & Service Inspection
+- High-signal running process detection
+- Tiered process enumeration (WMI → native fallback)
+- Service discovery with:
+  - Run-as account analysis
+  - Start type interpretation
+  - Auto-start non-SYSTEM detection
+  - Registry-based fallback when WMI is blocked
 
-### Processes & Services
+### Active Directory Attack Surface (Passive)
+- AD ACL escalation risk analysis
+- Delegation enumeration:
+  - Unconstrained
+  - Constrained (KCD)
+  - Resource-based constrained delegation (RBCD)
+- GPO ACL escalation risks
+- SYSVOL file-level permission risks
+- ADCS certificate template and CA misconfiguration checks
+- BadSuccessor / dMSA environmental assessment (passive)
 
-- Interesting running processes (owner, path, privilege context)
-    
-- Services with:
-    
-    - Non-SYSTEM run accounts
-        
-    - Potential service control permissions
-        
-    - Binary paths and states
-        
+### Historical & Sensitive Artefacts
+- Deleted AD object (tombstone) enumeration
+- DPAPI artefact presence checks (no decryption)
 
-### Active Directory Security & Escalation Surface
+### Targeted File Enumeration
+- Fast, deduplicated file search
+- Focused extension whitelist
+- Local paths + dynamically discovered network shares
+- Read-only, ACL-aware traversal
 
-- AD object ACLs (users, groups, computers, OUs)
-    
-- Dangerous rights (GenericAll, WriteDACL, WriteOwner, etc.)
-    
-- Extended rights (DCSync-related GUIDs)
-    
-- Delegation types:
-    
-    - Unconstrained
-        
-    - Constrained (KCD)
-        
-    - Resource-Based Constrained Delegation (RBCD)
-        
-- SPN sanity checks
-    
-
-### Group Policy Risks
-
-- GPO object ACL escalation risks
-    
-- SYSVOL file-level ACL misconfigurations
-    
-- Identification of writable or takeover-capable GPOs
-    
-
-### AD CS (Certificate Services)
-
-- Certificate template misconfigurations (ESC-style risks)
-    
-- Template and CA ACL takeover paths
-    
-- Weak or dangerous enrollment properties
-    
-
-### DPAPI Artefacts (Presence Only)
-
-- Master key locations
-    
-- Credential and vault artefacts
-    
-- Chrome login database presence  
-    _(No decryption, no access attempts)_
-    
-
-### Miscellaneous
-
-- Deleted AD object (tombstone) visibility
-    
-- BadSuccessor / dMSA **passive precondition assessment**
-    
-- Final mental checklist to help interpret findings
-    
+### Security Artefact Collection
+- Event log export (where permitted)
+- GPO result report
+- User artefact collection:
+  - PowerShell history
+  - Browser history (Chromium & Firefox)
+- Optional ZIP packaging
+- Explicit reporting of what was collected vs skipped
 
 ---
 
-## What this tool is NOT
+## Output Characteristics
 
-- ❌ It does **not exploit** anything
-    
-- ❌ It does **not modify** the system or AD
-    
-- ❌ It does **not replace** manual analysis
-    
-- ❌ It is **not** an automated privilege escalation framework
-    
+- Console output is structured and readable.
+- Where supported, output can be captured via PowerShell transcript.
+- Native command limitations are handled explicitly.
+- Errors are contextualized, not silent.
 
 ---
 
-## Important note
+## What This Script Is **Not**
 
-BoberWenum is meant to be a **supporting tool**, not a substitute for expertise.
+- ❌ Not an exploitation framework  
+- ❌ Not an auto-escalation tool  
+- ❌ Not stealth-optimized malware  
 
-It helps surface _interesting conditions_, _risky configurations_, and _questions worth asking_ —  
-but **context, experience, and careful verification are still essential**.
+This script answers one question:
 
-Treat its output as **leads**, not conclusions.
+> **“What kind of environment am I standing in, and what attack paths might exist?”**
 
 ---
 
-## Design principles
+## Intended Use Cases
 
-- Passive by default
-    
-- Read-only enumeration
-    
-- Stable and failure-tolerant
-    
-- Minimal dependencies
-    
-- Works with or without RSAT where possible
-    
-- Signal over noise
-    
+- Internal penetration testing
+- Red team post-compromise triage
+- CTF and lab environments
+- Incident response context discovery
+- Learning and research
 
 ---
 
 ## Disclaimer
 
-Use only on systems and environments you own or are explicitly authorized to assess.
+This tool performs **read-only enumeration only**.  
+It does not modify system state, abuse permissions, or exploit vulnerabilities.
+
+Use responsibly and only on systems you are authorized to assess.
+
+---
+
+## Author Notes
+
+BoberWenum is intentionally conservative in execution and explicit in reporting.  
+If something cannot be enumerated due to privilege or access limitations, the script will say so.
+
+That behavior is by design.
 
 ---
 
