@@ -1,4 +1,45 @@
-# BoberWenum
+```
+                           #########                                       
+                #####   ###         ###    #####                           
+              ##     ####              ####    ##                          
+              ##  ##                        ##  ##                         
+               ##       ###         ###        ##                          
+                 ##                         ##                             
+                ##      ###         ###      ##                            
+               ##       ###         ###       ##                           
+               #                                #                          
+              #             #######             ##                         
+             #             #       ##            #                         
+              ##     ##    ##     ##   ###      ##                         
+              ##      ##     #####     ##       ##                         
+              ##       ###     ##     ##        #      #######             
+               #          ##### #####          ##    ##       ###          
+                #           # # ###           ##    #    ## ##  ###        
+                #           #######           ##   ##      ##     ##       
+              ###                              ##  ##  ####  ## ## ##      
+             ##                                  ###   ####   ##    #      
+            ##                 #                  #   ##  ####  ##  ##     
+           ##        ##   ###      ###   ##        ##  ##  ###    # ##     
+           #          ####            ###           #   ###   ####  ##     
+          ##  ##       ##              ##       ##  ## ## ##  ####  ##     
+          #    ##       #             ##       ##   ##     ####    ##      
+         ##      ##   ###             ####  ###      #  ## ####   ###      
+         ##         ####                ####         #   ###      #        
+         ##          #                   ##          #  ## ##   ##         
+         ##          #                   ##          #         ##          
+          ##         #                   ##         ##      ###            
+          ##   #######                   ########   #     ###              
+            ###      ##                 ###      #########                 
+           ##   ## #  ###################  #  #   ##                       
+            ############                ###########                   
+    ____        _             __        __                         
+    | __ )  ___ | |__   ___ _ _\ \      / /__ _ __  _   _ _ __ ___  
+    |  _ \ / _ \| '_ \ / _ \ '__\ \ /\ / / _ \ '_ \| | | | '_ ` _ \ 
+    | |_) | (_) | |_) |  __/ |   \ V  V /  __/ | | | |_| | | | | | |
+    |____/ \___/|_.__/ \___|_|    \_/\_/ \___|_| |_|\__,_|_| |_| |_|
+```
+
+# BoberWenum 🦫
 
 **BoberWenum** is a passive, low-privilege–aware Windows enumeration script designed for post-compromise and internal assessment scenarios.  
 Its goal is to provide a structured, reliable overview of the local system, domain context, and Active Directory attack surface **without exploitation or modification**.
@@ -166,11 +207,6 @@ If something cannot be enumerated due to privilege or access limitations, the sc
 That behavior is by design.
 
 ---
-
-## Author
-
-Built for practitioners who prefer understanding the environment  
-before touching it.
 
 ## 📜 License
 
