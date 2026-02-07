@@ -1832,13 +1832,14 @@ Invoke-Safe "DPAPI Artefacts (Passive, Presence Only)" {
 Write-Phase "TARGETED ENUMERATION & COLLECTION"
 
 # ----------------------------
-# Targeted File Enumeration (Fast Mode)
+# Targeted File Enumeration (Safe & Complete)
 # ----------------------------
-Invoke-Safe "Targeted File Enumeration (Fast Mode, Deduplicated)" {
+Invoke-Safe "Targeted File Enumeration (Safe Mode)" {
+
     Write-Host ""
 
     # --------------------------------------------------
-    # Extension whitelist
+    # Extension whitelist (lowercase, with dot)
     # --------------------------------------------------
     $TargetExtensions = @(
         ".txt", ".doc", ".docx", ".xls", ".xlsx", ".pdf",
@@ -1850,7 +1851,7 @@ Invoke-Safe "Targeted File Enumeration (Fast Mode, Deduplicated)" {
     )
 
     # --------------------------------------------------
-    # Base root paths (local)
+    # Base root paths
     # --------------------------------------------------
     $RootPaths = @(
         "C:\Users",
@@ -1860,94 +1861,72 @@ Invoke-Safe "Targeted File Enumeration (Fast Mode, Deduplicated)" {
     )
 
     # --------------------------------------------------
-    # Scope banner
+    # Merge discovered network shares
     # --------------------------------------------------
-    Write-Host "[*] Target extensions:"
-    Write-Host "    $($TargetExtensions -join ', ')"
-    Write-Host ""
-    Write-Host "[*] Target root paths:"
-    Write-Host "    $($RootPaths -join ', ')"
-    Write-Host ""
-
-    # --------------------------------------------------
-    # Merge discovered network shares (if any)
-    # --------------------------------------------------
-    if ($global:BoberDiscoveredShareRoots -and
-        $global:BoberDiscoveredShareRoots.Count -gt 0) {
-
-        Write-Host "[*] Adding discovered network shares to scan scope"
-
+    if ($global:BoberDiscoveredShareRoots) {
         foreach ($share in $global:BoberDiscoveredShareRoots) {
             if ($RootPaths -notcontains $share) {
                 $RootPaths += $share
-                Write-Host "    + $share"
             }
         }
-    } else {
-        Write-Host "[INFO] No previously discovered network shares to include"
-        Write-Host ""
-    }
-    # --------------------------------------------------
-    # Deduplication storage
-    # --------------------------------------------------
-    $SeenFileIds = @{}
-
-    # --------------------------------------------------
-    # Safe child enumeration
-    # --------------------------------------------------
-    function Get-SafeChildItems {
-        param ([string]$Path)
-        try {
-            Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop
-        } catch {
-            #Write-Host "[SKIP][ACL] $Path"
-            return @()
-        }
     }
 
     # --------------------------------------------------
-    # File ID (best effort)
+    # Deduplication by FULL PATH (deterministic)
     # --------------------------------------------------
-    function Get-FileId {
-        param ([string]$Path)
-        try {
-            $fs = [System.IO.File]::Open(
-                $Path,
-                [System.IO.FileMode]::Open,
-                [System.IO.FileAccess]::Read,
-                [System.IO.FileShare]::ReadWrite
-            )
-            $id = $fs.SafeFileHandle.DangerousGetHandle().ToInt64()
-            $fs.Close()
-            return $id
-        } catch {
-            return $null
-        }
-    }
+    $SeenPaths = @{}
 
     # --------------------------------------------------
-    # Recursive traversal
+    # Safe recursive traversal
     # --------------------------------------------------
     function Search-Path {
-        param ([string]$StartPath)
+        param (
+            [Parameter(Mandatory)]
+            [string]$Path
+        )
 
-        foreach ($item in Get-SafeChildItems -Path $StartPath) {
+        $items = Get-ChildItem `
+            -LiteralPath $Path `
+            -Force `
+            -ErrorAction SilentlyContinue
 
-            if ($item.PSIsContainer) {
-                Search-Path -StartPath $item.FullName
+        foreach ($item in $items) {
+
+            # ------------------------------------------
+            # Skip reparse points (junctions, symlinks)
+            # ------------------------------------------
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
                 continue
             }
 
-            try {
-                $ext = $item.Extension.ToLower()
-                if (-not ($TargetExtensions -contains $ext)) { continue }
+            # ------------------------------------------
+            # Directory → recurse
+            # ------------------------------------------
+            if ($item.PSIsContainer) {
+                Search-Path -Path $item.FullName
+                continue
+            }
 
-                $fid = Get-FileId -Path $item.FullName
-                if ($fid -and $SeenFileIds.ContainsKey($fid)) { continue }
-                if ($fid) { $SeenFileIds[$fid] = $true }
+            # ------------------------------------------
+            # File → extension filter
+            # ------------------------------------------
+            $ext = $item.Extension.ToLower()
+            if (-not ($TargetExtensions -contains $ext)) {
+                continue
+            }
 
-                Write-Host "[HIT][$ext] $($item.FullName)"
-            } catch {}
+            # ------------------------------------------
+            # Dedup by canonical path
+            # ------------------------------------------
+            if ($SeenPaths.ContainsKey($item.FullName)) {
+                continue
+            }
+            $SeenPaths[$item.FullName] = $true
+
+            # ------------------------------------------
+            # HIT
+            # ------------------------------------------
+            Write-Host "[HIT][$ext] $($item.FullName)"
         }
     }
 
@@ -1955,6 +1934,7 @@ Invoke-Safe "Targeted File Enumeration (Fast Mode, Deduplicated)" {
     # Execution
     # --------------------------------------------------
     foreach ($root in $RootPaths) {
+
         Write-Host ""
         Write-Host "----------------------------------------"
         Write-Host "[*] Scanning: $root"
@@ -1965,7 +1945,7 @@ Invoke-Safe "Targeted File Enumeration (Fast Mode, Deduplicated)" {
             continue
         }
 
-        Search-Path -StartPath $root
+        Search-Path -Path $root
     }
 
     Write-Host ""
