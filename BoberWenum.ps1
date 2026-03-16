@@ -1865,6 +1865,10 @@ Invoke-Safe "Targeted File Enumeration (Safe Mode)" {
     # --------------------------------------------------
     if ($global:BoberDiscoveredShareRoots) {
         foreach ($share in $global:BoberDiscoveredShareRoots) {
+            if ($share -match '\\(C\$|ADMIN\$)$') {
+                continue
+            }
+
             if ($RootPaths -notcontains $share) {
                 $RootPaths += $share
             }
